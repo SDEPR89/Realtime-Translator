@@ -13,7 +13,8 @@ interface Subtitle {
 
 let socket: WebSocket | null = null;
 let audioContext: AudioContext | null = null;
-let processor: ScriptProcessorNode | null = null;
+let workletNode: AudioWorkletNode | null = null;
+let stream: MediaStream | null = null;
 
 export default function App() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
@@ -24,7 +25,6 @@ export default function App() {
   const isAutoScrolling = useRef(true);
   const defaultLayoutPluginInstance = defaultLayoutPlugin();
 
-  // Auto-scroll logic — only scroll if user is near the bottom
   useEffect(() => {
     if (isAutoScrolling.current) {
       subtitleEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -34,11 +34,8 @@ export default function App() {
   const handleScroll = () => {
     const container = subtitleContainerRef.current;
     if (!container) return;
-
-    // If user is within 50px of the bottom, re-enable auto-scroll
     const distanceFromBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight;
-
     isAutoScrolling.current = distanceFromBottom < 50;
   };
 
@@ -48,52 +45,72 @@ export default function App() {
   };
 
   const startRecording = async () => {
-    socket = new WebSocket("ws://localhost:8000/ws");
+    try {
+      socket = new WebSocket("ws://localhost:8000/ws");
 
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      socket.onopen = () => console.log("✅ WebSocket connected");
+      socket.onerror = (e) => console.error("❌ WebSocket error:", e);
+      socket.onclose = (e) => console.log("🔌 WebSocket closed:", e.code);
 
-      if (data.type === "transcript") {
-        const now = new Date();
-        const timestamp = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === "transcript") {
+          const now = new Date();
+          const timestamp = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
+          setSubtitles((prev) => [
+            ...prev,
+            {
+              id: Date.now(),
+              text: data.text,
+              timestamp,
+            },
+          ]);
+        }
+      };
 
-        setSubtitles((prev) => [
-          ...prev,
-          {
-            id: Date.now(),
-            text: data.text,
-            timestamp,
-          },
-        ]);
-      }
-    };
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+        },
+      });
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true },
-    });
+      audioContext = new AudioContext({ sampleRate: 16000 });
+      await audioContext.resume();
 
-    audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = audioContext.createMediaStreamSource(stream);
-    processor = audioContext.createScriptProcessor(8192, 1, 1);
+      await audioContext.audioWorklet.addModule("/audio-processor.js");
 
-    processor.onaudioprocess = (event) => {
-      const float32 = event.inputBuffer.getChannelData(0);
-      const int16 = float32ToInt16(float32);
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(int16.buffer as ArrayBuffer);
-      }
-    };
+      const source = audioContext.createMediaStreamSource(stream);
+      workletNode = new AudioWorkletNode(audioContext, "audio-processor");
 
-    source.connect(processor);
-    processor.connect(audioContext.destination);
-    setIsRecording(true);
+      workletNode.port.onmessage = (event) => {
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(event.data);
+        }
+      };
+
+      source.connect(workletNode);
+      workletNode.connect(audioContext.destination);
+
+      setIsRecording(true);
+      console.log("🎙 Recording started");
+    } catch (err) {
+      console.error("❌ Recording failed:", err);
+    }
   };
 
   const stopRecording = () => {
-    processor?.disconnect();
+    workletNode?.disconnect();
     audioContext?.close();
+    stream?.getTracks().forEach((t) => t.stop());
     socket?.close();
+    workletNode = null;
+    audioContext = null;
+    stream = null;
+    socket = null;
     setIsRecording(false);
+    console.log("⏹ Recording stopped");
   };
 
   return (
@@ -128,12 +145,10 @@ export default function App() {
         </span>
         <span style={{ flex: 1 }} />
 
-        {/* Record button */}
         <button
           onClick={isRecording ? stopRecording : startRecording}
           style={{
             fontSize: "12px",
-            fontWeight: 400,
             color: isRecording ? "#ff6b6b" : "#4ade80",
             background: "none",
             border: `1px solid ${isRecording ? "#ff6b6b" : "#4ade80"}`,
@@ -146,11 +161,9 @@ export default function App() {
           {isRecording ? "⏹ stop" : "⏺ record"}
         </button>
 
-        {/* PDF button */}
         <label
           style={{
             fontSize: "12px",
-            fontWeight: 400,
             color: "#555",
             background: "none",
             padding: "5px 14px",
@@ -195,14 +208,17 @@ export default function App() {
                   }}
                 >
                   <span
-                    style={{ fontSize: "20px", fontWeight: 300, color: "#333" }}
+                    style={{
+                      fontSize: "20px",
+                      fontWeight: 300,
+                      color: "#333",
+                    }}
                   >
                     no document
                   </span>
                   <span
                     style={{
                       fontSize: "13px",
-                      fontWeight: 300,
                       color: "#2a2a2a",
                     }}
                   >
@@ -232,7 +248,6 @@ export default function App() {
                 background: "#0f0f0f",
               }}
             >
-              {/* Header */}
               <div
                 style={{
                   padding: "12px 20px",
@@ -247,7 +262,6 @@ export default function App() {
                 {isRecording ? "● live" : "subtitles"}
               </div>
 
-              {/* Scrollable subtitle list */}
               <div
                 ref={subtitleContainerRef}
                 onScroll={handleScroll}
@@ -280,7 +294,6 @@ export default function App() {
                         fontWeight: 300,
                         color: i === subtitles.length - 1 ? "#e0e0e0" : "#444",
                         lineHeight: "1.6",
-                        letterSpacing: "-0.01em",
                         borderLeft:
                           i === subtitles.length - 1
                             ? "1px solid #444"
@@ -303,7 +316,6 @@ export default function App() {
                     </div>
                   ))
                 )}
-                {/* Invisible div at the bottom — scroll target */}
                 <div ref={subtitleEndRef} />
               </div>
             </div>
@@ -312,13 +324,4 @@ export default function App() {
       </div>
     </div>
   );
-}
-
-function float32ToInt16(float32: Float32Array): Int16Array {
-  const int16 = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    const clamped = Math.max(-1, Math.min(1, float32[i]));
-    int16[i] = clamped * 0x7fff;
-  }
-  return int16;
 }
