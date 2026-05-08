@@ -4,6 +4,15 @@ import { Viewer, Worker } from "@react-pdf-viewer/core";
 import { defaultLayoutPlugin } from "@react-pdf-viewer/default-layout";
 import "@react-pdf-viewer/core/lib/styles/index.css";
 import "@react-pdf-viewer/default-layout/lib/styles/index.css";
+import { pageNavigationPlugin } from "@react-pdf-viewer/page-navigation";
+import "@react-pdf-viewer/page-navigation/lib/styles/index.css";
+
+interface PinnedWord {
+  id: number;
+  word: string;
+  pdf_page: number;
+  timestamp: string;
+}
 
 interface Subtitle {
   id: number;
@@ -20,10 +29,26 @@ export default function App() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pinnedWords, setPinnedWords] = useState<PinnedWord[]>([]);
   const subtitleEndRef = useRef<HTMLDivElement>(null);
   const subtitleContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrolling = useRef(true);
   const defaultLayoutPluginInstance = defaultLayoutPlugin();
+  const pageNavigationPluginInstance = pageNavigationPlugin();
+  const pageNavRef = useRef<any>(null);
+  pageNavRef.current = pageNavigationPluginInstance;
+
+  const handleWordClick = (word: string, timestamp: string) => {
+    const newPin: PinnedWord = {
+      id: Date.now(),
+      word: word.trim(),
+      pdf_page: currentPage,
+      timestamp,
+    };
+    setPinnedWords((prev) => [...prev, newPin]);
+    console.log("📌 Pinned:", newPin);
+  };
 
   useEffect(() => {
     if (isAutoScrolling.current) {
@@ -47,7 +72,6 @@ export default function App() {
   const startRecording = async () => {
     try {
       socket = new WebSocket("ws://localhost:8000/ws");
-
       socket.onopen = () => console.log("✅ WebSocket connected");
       socket.onerror = (e) => console.error("❌ WebSocket error:", e);
       socket.onclose = (e) => console.log("🔌 WebSocket closed:", e.code);
@@ -69,16 +93,11 @@ export default function App() {
       };
 
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-        },
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true },
       });
 
       audioContext = new AudioContext({ sampleRate: 16000 });
       await audioContext.resume();
-
       await audioContext.audioWorklet.addModule("/audio-processor.js");
 
       const source = audioContext.createMediaStreamSource(stream);
@@ -92,7 +111,6 @@ export default function App() {
 
       source.connect(workletNode);
       workletNode.connect(audioContext.destination);
-
       setIsRecording(true);
       console.log("🎙 Recording started");
     } catch (err) {
@@ -145,6 +163,32 @@ export default function App() {
         </span>
         <span style={{ flex: 1 }} />
 
+        {/* Export button — only shows when pins exist */}
+        {pinnedWords.length > 0 && (
+          <button
+            onClick={() => {
+              const json = JSON.stringify(pinnedWords, null, 2);
+              const blob = new Blob([json], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "pinned-words.json";
+              a.click();
+            }}
+            style={{
+              fontSize: "12px",
+              color: "#555",
+              background: "none",
+              border: "1px solid #2a2a2a",
+              padding: "5px 14px",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            export {pinnedWords.length} pins
+          </button>
+        )}
+
         <button
           onClick={isRecording ? stopRecording : startRecording}
           style={{
@@ -192,7 +236,11 @@ export default function App() {
                 <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
                   <Viewer
                     fileUrl={pdfUrl}
-                    plugins={[defaultLayoutPluginInstance]}
+                    plugins={[
+                      defaultLayoutPluginInstance,
+                      pageNavigationPluginInstance,
+                    ]}
+                    onPageChange={(e) => setCurrentPage(e.currentPage + 1)}
                   />
                 </Worker>
               ) : (
@@ -208,20 +256,11 @@ export default function App() {
                   }}
                 >
                   <span
-                    style={{
-                      fontSize: "20px",
-                      fontWeight: 300,
-                      color: "#333",
-                    }}
+                    style={{ fontSize: "20px", fontWeight: 300, color: "#333" }}
                   >
                     no document
                   </span>
-                  <span
-                    style={{
-                      fontSize: "13px",
-                      color: "#2a2a2a",
-                    }}
-                  >
+                  <span style={{ fontSize: "13px", color: "#2a2a2a" }}>
                     open a pdf to begin
                   </span>
                 </div>
@@ -238,7 +277,7 @@ export default function App() {
             }}
           />
 
-          {/* Right — Subtitles */}
+          {/* Right — Subtitles + Pinned canvas */}
           <Panel defaultSize={38} minSize={20}>
             <div
               style={{
@@ -248,6 +287,7 @@ export default function App() {
                 background: "#0f0f0f",
               }}
             >
+              {/* Header */}
               <div
                 style={{
                   padding: "12px 20px",
@@ -262,6 +302,7 @@ export default function App() {
                 {isRecording ? "● live" : "subtitles"}
               </div>
 
+              {/* Subtitle scroll area */}
               <div
                 ref={subtitleContainerRef}
                 onScroll={handleScroll}
@@ -293,7 +334,7 @@ export default function App() {
                         fontSize: "20px",
                         fontWeight: 300,
                         color: i === subtitles.length - 1 ? "#e0e0e0" : "#444",
-                        lineHeight: "1.6",
+                        lineHeight: "1.8",
                         borderLeft:
                           i === subtitles.length - 1
                             ? "1px solid #444"
@@ -302,12 +343,37 @@ export default function App() {
                         transition: "color 0.3s",
                       }}
                     >
-                      {sub.text}
+                      {sub.text.split(" ").map((word, wi) => (
+                        <span
+                          key={wi}
+                          onClick={() => handleWordClick(word, sub.timestamp)}
+                          style={{
+                            cursor: "pointer",
+                            marginRight: "6px",
+                            padding: "2px 4px",
+                            borderRadius: "3px",
+                            transition: "background 0.15s, color 0.15s",
+                            display: "inline-block",
+                          }}
+                          onMouseEnter={(e) => {
+                            (e.target as HTMLElement).style.background =
+                              "#2a2a2a";
+                            (e.target as HTMLElement).style.color = "#e0e0e0";
+                          }}
+                          onMouseLeave={(e) => {
+                            (e.target as HTMLElement).style.background =
+                              "transparent";
+                            (e.target as HTMLElement).style.color = "";
+                          }}
+                        >
+                          {word}
+                        </span>
+                      ))}
                       <span
                         style={{
                           fontSize: "10px",
                           color: "#2a2a2a",
-                          marginLeft: "10px",
+                          marginLeft: "6px",
                           fontFamily: "monospace",
                         }}
                       >
@@ -318,6 +384,103 @@ export default function App() {
                 )}
                 <div ref={subtitleEndRef} />
               </div>
+
+              {/* Pinned words canvas — only shows when pins exist */}
+              {pinnedWords.length > 0 && (
+                <div
+                  style={{
+                    borderTop: "1px solid #1a1a1a",
+                    padding: "12px",
+                    background: "#0a0a0a",
+                    maxHeight: "160px",
+                    overflowY: "auto",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: "9px",
+                      color: "#333",
+                      letterSpacing: "0.1em",
+                      textTransform: "uppercase",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    pinned words
+                  </div>
+                  <div
+                    style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}
+                  >
+                    {pinnedWords.map((pin) => (
+                      <div
+                        key={pin.id}
+                        onClick={() => {
+                          pageNavRef.current?.jumpToPage(pin.pdf_page - 1);
+                        }}
+                        style={{
+                          background: "#1a1a1a",
+                          border: "1px solid #2a2a2a",
+                          borderRadius: "4px",
+                          padding: "5px 10px",
+                          cursor: "pointer",
+                          position: "relative", // ← add this
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.borderColor = "#444")
+                        }
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.borderColor = "#2a2a2a")
+                        }
+                      >
+                        {/* Delete button */}
+                        <span
+                          onClick={() =>
+                            setPinnedWords((prev) =>
+                              prev.filter((p) => p.id !== pin.id),
+                            )
+                          }
+                          style={{
+                            position: "absolute",
+                            top: "3px",
+                            right: "5px",
+                            fontSize: "10px",
+                            color: "#333",
+                            cursor: "pointer",
+                            lineHeight: 1,
+                          }}
+                          onMouseEnter={(e) =>
+                            (e.currentTarget.style.color = "#ff6b6b")
+                          }
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.color = "#333")
+                          }
+                        >
+                          ×
+                        </span>
+
+                        <div
+                          style={{
+                            fontSize: "14px",
+                            color: "#e0e0e0",
+                            fontWeight: 300,
+                          }}
+                        >
+                          {pin.word}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "9px",
+                            color: "#444",
+                            marginTop: "2px",
+                            fontFamily: "monospace",
+                          }}
+                        >
+                          p.{pin.pdf_page} · {pin.timestamp}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </Panel>
         </PanelGroup>
