@@ -4,5 +4,3 @@
 - [x] Phase 2 — Split pane PDF viewer
 - [x] Phase 3 — Live Whisper subtitles
 - [x] Phase 4 — Interactive canvas
-- [x] Phase 5 — Offline inference
-- [ ] Phase 6 — Persistence and rewind

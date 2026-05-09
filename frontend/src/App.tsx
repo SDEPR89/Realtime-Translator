@@ -12,12 +12,15 @@ interface PinnedWord {
   word: string;
   pdf_page: number;
   timestamp: string;
+  audioOffset?: number;
 }
 
 interface Subtitle {
   id: number;
   text: string;
+  translation: string; // ← add this
   timestamp: string;
+  language: string; // ← add this
 }
 
 let socket: WebSocket | null = null;
@@ -26,38 +29,22 @@ let workletNode: AudioWorkletNode | null = null;
 let stream: MediaStream | null = null;
 
 export default function App() {
-  const [modelSize, setModelSize] = useState("base");
-  const [modelLoading, setModelLoading] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [pinnedWords, setPinnedWords] = useState<PinnedWord[]>([]);
+  const [assignmentId, setAssignmentId] = useState<number | null>(null);
+  const [modelSize, setModelSize] = useState("base");
+  const [modelLoading, setModelLoading] = useState(false);
   const subtitleEndRef = useRef<HTMLDivElement>(null);
   const subtitleContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrolling = useRef(true);
+  const pageNavRef = useRef<any>(null);
+  const [inputLanguage, setInputLanguage] = useState("auto");
   const defaultLayoutPluginInstance = defaultLayoutPlugin();
   const pageNavigationPluginInstance = pageNavigationPlugin();
-  const pageNavRef = useRef<any>(null);
   pageNavRef.current = pageNavigationPluginInstance;
-
-  const switchModel = async (size: string) => {
-    setModelLoading(true);
-    setModelSize(size);
-    await fetch(`http://localhost:8000/model/${size}`, { method: "POST" });
-    setTimeout(() => setModelLoading(false), 3000); // give it time to load
-  };
-
-  const handleWordClick = (word: string, timestamp: string) => {
-    const newPin: PinnedWord = {
-      id: Date.now(),
-      word: word.trim(),
-      pdf_page: currentPage,
-      timestamp,
-    };
-    setPinnedWords((prev) => [...prev, newPin]);
-    console.log("📌 Pinned:", newPin);
-  };
 
   useEffect(() => {
     if (isAutoScrolling.current) {
@@ -73,9 +60,91 @@ export default function App() {
     isAutoScrolling.current = distanceFromBottom < 50;
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setPdfUrl(URL.createObjectURL(file));
+    if (file) {
+      setPdfUrl(URL.createObjectURL(file));
+
+      // Create new assignment session in database
+      try {
+        const res = await fetch("http://localhost:8000/assignment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pdf_path: file.name }),
+        });
+        const data = await res.json();
+        setAssignmentId(data.assignment_id);
+        console.log("📚 Assignment created:", data.assignment_id);
+      } catch (err) {
+        console.error("❌ Failed to create assignment:", err);
+      }
+    }
+  };
+
+  const switchModel = async (size: string) => {
+    setModelLoading(true);
+    setModelSize(size);
+    try {
+      await fetch(`http://localhost:8000/model/${size}`, { method: "POST" });
+    } catch (err) {
+      console.error("❌ Failed to switch model:", err);
+    }
+    setTimeout(() => setModelLoading(false), 3000);
+  };
+
+  const handleWordClick = async (word: string, timestamp: string) => {
+    const newPin: PinnedWord = {
+      id: Date.now(),
+      word: word.trim(),
+      pdf_page: currentPage,
+      timestamp,
+    };
+
+    // Save to database and get audio offset back
+    if (assignmentId) {
+      try {
+        const res = await fetch("http://localhost:8000/note", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            word: word.trim(),
+            pdf_page: currentPage,
+            timestamp,
+          }),
+        });
+        const data = await res.json();
+        newPin.audioOffset = data.audio_offset;
+      } catch (err) {
+        console.error("❌ Failed to save note:", err);
+      }
+    }
+
+    setPinnedWords((prev) => [...prev, newPin]);
+    console.log("📌 Pinned:", newPin);
+  };
+
+  const playAudioRewind = async (audioOffset: number) => {
+    try {
+      const res = await fetch(`http://localhost:8000/audio/${audioOffset}`);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.play();
+      console.log(`🔊 Playing audio from offset ${audioOffset}s`);
+    } catch (err) {
+      console.error("❌ Audio playback failed:", err);
+    }
+  };
+
+  const switchLanguage = async (lang: string) => {
+    setInputLanguage(lang);
+    try {
+      await fetch(`http://localhost:8000/language/${lang}`, { method: "POST" });
+      console.log("🌐 Language switched to:", lang);
+    } catch (err) {
+      console.error("❌ Failed to switch language:", err);
+    }
   };
 
   const startRecording = async () => {
@@ -95,7 +164,9 @@ export default function App() {
             {
               id: Date.now(),
               text: data.text,
+              translation: data.translation || "",
               timestamp,
+              language: data.language || "",
             },
           ]);
         }
@@ -140,6 +211,16 @@ export default function App() {
     console.log("⏹ Recording stopped");
   };
 
+  const exportPins = () => {
+    const json = JSON.stringify(pinnedWords, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pinned-words.json";
+    a.click();
+  };
+
   return (
     <div
       style={{
@@ -151,14 +232,14 @@ export default function App() {
       }}
     >
       {/* Top bar */}
+      {/* Language selector */}
       <select
-        value={modelSize}
-        onChange={(e) => switchModel(e.target.value)}
-        disabled={modelLoading}
+        value={inputLanguage}
+        onChange={(e) => switchLanguage(e.target.value)}
         style={{
           fontSize: "12px",
-          color: modelLoading ? "#333" : "#555",
-          background: "none",
+          color: "#555",
+          background: "#0f0f0f",
           border: "1px solid #2a2a2a",
           padding: "5px 10px",
           borderRadius: "4px",
@@ -166,16 +247,14 @@ export default function App() {
           outline: "none",
         }}
       >
-        <option value="tiny">tiny — fastest</option>
-        <option value="base">base — balanced</option>
-        <option value="small">small — accurate</option>
-        <option value="medium">medium — best</option>
+        <option value="auto">auto detect</option>
+        <option value="ja">日本語</option>
+        <option value="en">english</option>
+        <option value="zh">中文</option>
+        <option value="ko">한국어</option>
+        <option value="th">ภาษาไทย</option>
       </select>
-      {modelLoading && (
-        <span style={{ fontSize: "11px", color: "#444" }}>
-          loading model...
-        </span>
-      )}
+
       <div
         style={{
           padding: "12px 20px",
@@ -197,18 +276,10 @@ export default function App() {
         </span>
         <span style={{ flex: 1 }} />
 
-        {/* Export button — only shows when pins exist */}
+        {/* Export pins button */}
         {pinnedWords.length > 0 && (
           <button
-            onClick={() => {
-              const json = JSON.stringify(pinnedWords, null, 2);
-              const blob = new Blob([json], { type: "application/json" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = "pinned-words.json";
-              a.click();
-            }}
+            onClick={exportPins}
             style={{
               fontSize: "12px",
               color: "#555",
@@ -223,6 +294,35 @@ export default function App() {
           </button>
         )}
 
+        {/* Model selector */}
+        <select
+          value={modelSize}
+          onChange={(e) => switchModel(e.target.value)}
+          disabled={modelLoading}
+          style={{
+            fontSize: "12px",
+            color: modelLoading ? "#333" : "#555",
+            background: "#0f0f0f",
+            border: "1px solid #2a2a2a",
+            padding: "5px 10px",
+            borderRadius: "4px",
+            cursor: "pointer",
+            outline: "none",
+          }}
+        >
+          <option value="tiny">tiny — fastest</option>
+          <option value="base">base — balanced</option>
+          <option value="small">small — accurate</option>
+          <option value="medium">medium — best</option>
+        </select>
+
+        {modelLoading && (
+          <span style={{ fontSize: "11px", color: "#444" }}>
+            loading model...
+          </span>
+        )}
+
+        {/* Record button */}
         <button
           onClick={isRecording ? stopRecording : startRecording}
           style={{
@@ -239,6 +339,7 @@ export default function App() {
           {isRecording ? "⏹ stop" : "⏺ record"}
         </button>
 
+        {/* Open PDF button */}
         <label
           style={{
             fontSize: "12px",
@@ -263,7 +364,7 @@ export default function App() {
       {/* Split pane */}
       <div style={{ flex: 1, overflow: "hidden" }}>
         <PanelGroup direction="horizontal">
-          {/* Left — PDF */}
+          {/* Left — PDF viewer */}
           <Panel defaultSize={62} minSize={30}>
             <div style={{ height: "100%", overflow: "auto" }}>
               {pdfUrl ? (
@@ -311,7 +412,7 @@ export default function App() {
             }}
           />
 
-          {/* Right — Subtitles + Pinned canvas */}
+          {/* Right — Subtitles + Pinned words */}
           <Panel defaultSize={38} minSize={20}>
             <div
               style={{
@@ -377,49 +478,69 @@ export default function App() {
                         transition: "color 0.3s",
                       }}
                     >
-                      {sub.text.split(" ").map((word, wi) => (
+                      {/* Original words — clickable */}
+                      <div>
+                        {sub.text.split(" ").map((word, wi) => (
+                          <span
+                            key={wi}
+                            onClick={() => handleWordClick(word, sub.timestamp)}
+                            style={{
+                              cursor: "pointer",
+                              marginRight: "6px",
+                              padding: "2px 4px",
+                              borderRadius: "3px",
+                              transition: "background 0.15s, color 0.15s",
+                              display: "inline-block",
+                            }}
+                            onMouseEnter={(e) => {
+                              (e.target as HTMLElement).style.background =
+                                "#2a2a2a";
+                              (e.target as HTMLElement).style.color = "#e0e0e0";
+                            }}
+                            onMouseLeave={(e) => {
+                              (e.target as HTMLElement).style.background =
+                                "transparent";
+                              (e.target as HTMLElement).style.color = "";
+                            }}
+                          >
+                            {word}
+                          </span>
+                        ))}
                         <span
-                          key={wi}
-                          onClick={() => handleWordClick(word, sub.timestamp)}
                           style={{
-                            cursor: "pointer",
-                            marginRight: "6px",
-                            padding: "2px 4px",
-                            borderRadius: "3px",
-                            transition: "background 0.15s, color 0.15s",
-                            display: "inline-block",
-                          }}
-                          onMouseEnter={(e) => {
-                            (e.target as HTMLElement).style.background =
-                              "#2a2a2a";
-                            (e.target as HTMLElement).style.color = "#e0e0e0";
-                          }}
-                          onMouseLeave={(e) => {
-                            (e.target as HTMLElement).style.background =
-                              "transparent";
-                            (e.target as HTMLElement).style.color = "";
+                            fontSize: "10px",
+                            color: "#2a2a2a",
+                            marginLeft: "6px",
+                            fontFamily: "monospace",
                           }}
                         >
-                          {word}
+                          {sub.timestamp}
                         </span>
-                      ))}
-                      <span
-                        style={{
-                          fontSize: "10px",
-                          color: "#2a2a2a",
-                          marginLeft: "6px",
-                          fontFamily: "monospace",
-                        }}
-                      >
-                        {sub.timestamp}
-                      </span>
+                      </div>
+
+                      {/* Translation below — smaller, muted */}
+                      {sub.translation && sub.translation !== sub.text && (
+                        <div
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: 300,
+                            color:
+                              i === subtitles.length - 1 ? "#666" : "#2a2a2a",
+                            marginTop: "4px",
+                            fontStyle: "italic",
+                            lineHeight: "1.5",
+                          }}
+                        >
+                          {sub.translation}
+                        </div>
+                      )}
                     </div>
                   ))
                 )}
                 <div ref={subtitleEndRef} />
               </div>
 
-              {/* Pinned words canvas — only shows when pins exist */}
+              {/* Pinned words canvas */}
               {pinnedWords.length > 0 && (
                 <div
                   style={{
@@ -449,6 +570,9 @@ export default function App() {
                         key={pin.id}
                         onClick={() => {
                           pageNavRef.current?.jumpToPage(pin.pdf_page - 1);
+                          if (pin.audioOffset !== undefined) {
+                            playAudioRewind(pin.audioOffset);
+                          }
                         }}
                         style={{
                           background: "#1a1a1a",
@@ -456,7 +580,7 @@ export default function App() {
                           borderRadius: "4px",
                           padding: "5px 10px",
                           cursor: "pointer",
-                          position: "relative", // ← add this
+                          position: "relative",
                         }}
                         onMouseEnter={(e) =>
                           (e.currentTarget.style.borderColor = "#444")
@@ -467,11 +591,12 @@ export default function App() {
                       >
                         {/* Delete button */}
                         <span
-                          onClick={() =>
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setPinnedWords((prev) =>
                               prev.filter((p) => p.id !== pin.id),
-                            )
-                          }
+                            );
+                          }}
                           style={{
                             position: "absolute",
                             top: "3px",
@@ -479,7 +604,7 @@ export default function App() {
                             fontSize: "10px",
                             color: "#333",
                             cursor: "pointer",
-                            lineHeight: 1,
+                            lineHeight: "1",
                           }}
                           onMouseEnter={(e) =>
                             (e.currentTarget.style.color = "#ff6b6b")
@@ -509,6 +634,13 @@ export default function App() {
                           }}
                         >
                           p.{pin.pdf_page} · {pin.timestamp}
+                          {pin.audioOffset !== undefined && (
+                            <span
+                              style={{ color: "#2a4a2a", marginLeft: "4px" }}
+                            >
+                              ▶
+                            </span>
+                          )}
                         </div>
                       </div>
                     ))}
