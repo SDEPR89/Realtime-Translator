@@ -26,6 +26,8 @@ let workletNode: AudioWorkletNode | null = null;
 let stream: MediaStream | null = null;
 
 export default function App() {
+  const [modelSize, setModelSize] = useState("base");
+  const [modelLoading, setModelLoading] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
@@ -38,6 +40,13 @@ export default function App() {
   const pageNavigationPluginInstance = pageNavigationPlugin();
   const pageNavRef = useRef<any>(null);
   pageNavRef.current = pageNavigationPluginInstance;
+
+  const switchModel = async (size: string) => {
+    setModelLoading(true);
+    setModelSize(size);
+    await fetch(`http://localhost:8000/model/${size}`, { method: "POST" });
+    setTimeout(() => setModelLoading(false), 3000); // give it time to load
+  };
 
   const handleWordClick = (word: string, timestamp: string) => {
     const newPin: PinnedWord = {
@@ -142,6 +151,31 @@ export default function App() {
       }}
     >
       {/* Top bar */}
+      <select
+        value={modelSize}
+        onChange={(e) => switchModel(e.target.value)}
+        disabled={modelLoading}
+        style={{
+          fontSize: "12px",
+          color: modelLoading ? "#333" : "#555",
+          background: "none",
+          border: "1px solid #2a2a2a",
+          padding: "5px 10px",
+          borderRadius: "4px",
+          cursor: "pointer",
+          outline: "none",
+        }}
+      >
+        <option value="tiny">tiny — fastest</option>
+        <option value="base">base — balanced</option>
+        <option value="small">small — accurate</option>
+        <option value="medium">medium — best</option>
+      </select>
+      {modelLoading && (
+        <span style={{ fontSize: "11px", color: "#444" }}>
+          loading model...
+        </span>
+      )}
       <div
         style={{
           padding: "12px 20px",
