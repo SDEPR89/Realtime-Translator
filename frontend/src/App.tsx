@@ -18,9 +18,9 @@ interface PinnedWord {
 interface Subtitle {
   id: number;
   text: string;
-  translation: string; // ← add this
+  translation: string;
   timestamp: string;
-  language: string; // ← add this
+  language: string;
 }
 
 let socket: WebSocket | null = null;
@@ -35,13 +35,14 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pinnedWords, setPinnedWords] = useState<PinnedWord[]>([]);
   const [assignmentId, setAssignmentId] = useState<number | null>(null);
-  const [modelSize, setModelSize] = useState("base");
+  const [modelSize, setModelSize] = useState("small");
   const [modelLoading, setModelLoading] = useState(false);
+  const [inputLanguage, setInputLanguage] = useState("auto");
+  const [targetLanguage, setTargetLanguage] = useState("en");
   const subtitleEndRef = useRef<HTMLDivElement>(null);
   const subtitleContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrolling = useRef(true);
   const pageNavRef = useRef<any>(null);
-  const [inputLanguage, setInputLanguage] = useState("auto");
   const defaultLayoutPluginInstance = defaultLayoutPlugin();
   const pageNavigationPluginInstance = pageNavigationPlugin();
   pageNavRef.current = pageNavigationPluginInstance;
@@ -64,8 +65,6 @@ export default function App() {
     const file = e.target.files?.[0];
     if (file) {
       setPdfUrl(URL.createObjectURL(file));
-
-      // Create new assignment session in database
       try {
         const res = await fetch("http://localhost:8000/assignment", {
           method: "POST",
@@ -92,6 +91,28 @@ export default function App() {
     setTimeout(() => setModelLoading(false), 3000);
   };
 
+  const switchInputLanguage = async (lang: string) => {
+    setInputLanguage(lang);
+    try {
+      await fetch(`http://localhost:8000/language/${lang}`, { method: "POST" });
+      console.log("🌐 Input language switched to:", lang);
+    } catch (err) {
+      console.error("❌ Failed to switch input language:", err);
+    }
+  };
+
+  const switchTargetLanguage = async (lang: string) => {
+    setTargetLanguage(lang);
+    try {
+      await fetch(`http://localhost:8000/target-language/${lang}`, {
+        method: "POST",
+      });
+      console.log("🎯 Target language switched to:", lang);
+    } catch (err) {
+      console.error("❌ Failed to switch target language:", err);
+    }
+  };
+
   const handleWordClick = async (word: string, timestamp: string) => {
     const newPin: PinnedWord = {
       id: Date.now(),
@@ -99,8 +120,6 @@ export default function App() {
       pdf_page: currentPage,
       timestamp,
     };
-
-    // Save to database and get audio offset back
     if (assignmentId) {
       try {
         const res = await fetch("http://localhost:8000/note", {
@@ -118,7 +137,6 @@ export default function App() {
         console.error("❌ Failed to save note:", err);
       }
     }
-
     setPinnedWords((prev) => [...prev, newPin]);
     console.log("📌 Pinned:", newPin);
   };
@@ -134,16 +152,6 @@ export default function App() {
       console.log(`🔊 Playing audio from offset ${audioOffset}s`);
     } catch (err) {
       console.error("❌ Audio playback failed:", err);
-    }
-  };
-
-  const switchLanguage = async (lang: string) => {
-    setInputLanguage(lang);
-    try {
-      await fetch(`http://localhost:8000/language/${lang}`, { method: "POST" });
-      console.log("🌐 Language switched to:", lang);
-    } catch (err) {
-      console.error("❌ Failed to switch language:", err);
     }
   };
 
@@ -232,36 +240,14 @@ export default function App() {
       }}
     >
       {/* Top bar */}
-      {/* Language selector */}
-      <select
-        value={inputLanguage}
-        onChange={(e) => switchLanguage(e.target.value)}
-        style={{
-          fontSize: "12px",
-          color: "#555",
-          background: "#0f0f0f",
-          border: "1px solid #2a2a2a",
-          padding: "5px 10px",
-          borderRadius: "4px",
-          cursor: "pointer",
-          outline: "none",
-        }}
-      >
-        <option value="auto">auto detect</option>
-        <option value="ja">日本語</option>
-        <option value="en">english</option>
-        <option value="zh">中文</option>
-        <option value="ko">한국어</option>
-        <option value="th">ภาษาไทย</option>
-      </select>
-
       <div
         style={{
           padding: "12px 20px",
           display: "flex",
           alignItems: "center",
-          gap: "14px",
+          gap: "10px",
           borderBottom: "1px solid #1e1e1e",
+          flexWrap: "wrap",
         }}
       >
         <span
@@ -276,7 +262,7 @@ export default function App() {
         </span>
         <span style={{ flex: 1 }} />
 
-        {/* Export pins button */}
+        {/* Export pins */}
         {pinnedWords.length > 0 && (
           <button
             onClick={exportPins}
@@ -310,17 +296,73 @@ export default function App() {
             outline: "none",
           }}
         >
-          <option value="tiny">tiny — fastest</option>
-          <option value="base">base — balanced</option>
-          <option value="small">small — accurate</option>
-          <option value="medium">medium — best</option>
+          <option value="small">small</option>
         </select>
 
         {modelLoading && (
-          <span style={{ fontSize: "11px", color: "#444" }}>
-            loading model...
-          </span>
+          <span style={{ fontSize: "11px", color: "#444" }}>loading...</span>
         )}
+
+        {/* Input language */}
+        <select
+          value={inputLanguage}
+          onChange={(e) => switchInputLanguage(e.target.value)}
+          style={{
+            fontSize: "12px",
+            color: "#555",
+            background: "#0f0f0f",
+            border: "1px solid #2a2a2a",
+            padding: "5px 10px",
+            borderRadius: "4px",
+            cursor: "pointer",
+            outline: "none",
+          }}
+        >
+          <option value="auto">auto detect</option>
+          <option value="ja">日本語</option>
+          <option value="en">english</option>
+          <option value="zh">中文</option>
+          <option value="ko">한국어</option>
+          <option value="th">ภาษาไทย</option>
+          <option value="fr">français</option>
+          <option value="es">español</option>
+          <option value="de">deutsch</option>
+          <option value="it">italiano</option>
+          <option value="pt">português</option>
+          <option value="ru">русский</option>
+          <option value="vi">tiếng việt</option>
+          <option value="id">indonesia</option>
+        </select>
+
+        {/* Target language */}
+        <select
+          value={targetLanguage}
+          onChange={(e) => switchTargetLanguage(e.target.value)}
+          style={{
+            fontSize: "12px",
+            color: "#555",
+            background: "#0f0f0f",
+            border: "1px solid #2a2a2a",
+            padding: "5px 10px",
+            borderRadius: "4px",
+            cursor: "pointer",
+            outline: "none",
+          }}
+        >
+          <option value="en">→ english</option>
+          <option value="ja">→ 日本語</option>
+          <option value="zh">→ 中文</option>
+          <option value="ko">→ 한국어</option>
+          <option value="th">→ ภาษาไทย</option>
+          <option value="fr">→ français</option>
+          <option value="es">→ español</option>
+          <option value="de">→ deutsch</option>
+          <option value="it">→ italiano</option>
+          <option value="pt">→ português</option>
+          <option value="ru">→ русский</option>
+          <option value="vi">→ tiếng việt</option>
+          <option value="id">→ indonesia</option>
+        </select>
 
         {/* Record button */}
         <button
@@ -339,7 +381,7 @@ export default function App() {
           {isRecording ? "⏹ stop" : "⏺ record"}
         </button>
 
-        {/* Open PDF button */}
+        {/* Open PDF */}
         <label
           style={{
             fontSize: "12px",
@@ -364,7 +406,7 @@ export default function App() {
       {/* Split pane */}
       <div style={{ flex: 1, overflow: "hidden" }}>
         <PanelGroup direction="horizontal">
-          {/* Left — PDF viewer */}
+          {/* Left — PDF */}
           <Panel defaultSize={62} minSize={30}>
             <div style={{ height: "100%", overflow: "auto" }}>
               {pdfUrl ? (
@@ -412,7 +454,7 @@ export default function App() {
             }}
           />
 
-          {/* Right — Subtitles + Pinned words */}
+          {/* Right — Subtitles + Pins */}
           <Panel defaultSize={38} minSize={20}>
             <div
               style={{
@@ -478,7 +520,7 @@ export default function App() {
                         transition: "color 0.3s",
                       }}
                     >
-                      {/* Original words — clickable */}
+                      {/* Original — clickable words */}
                       <div>
                         {sub.text.split(" ").map((word, wi) => (
                           <span
@@ -518,17 +560,20 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Translation below — smaller, muted */}
+                      {/* Translation */}
                       {sub.translation && sub.translation !== sub.text && (
                         <div
                           style={{
-                            fontSize: "14px",
+                            fontSize: "16px",
                             fontWeight: 300,
                             color:
-                              i === subtitles.length - 1 ? "#666" : "#2a2a2a",
-                            marginTop: "4px",
-                            fontStyle: "italic",
-                            lineHeight: "1.5",
+                              i === subtitles.length - 1
+                                ? "#4ade80"
+                                : "#2a4a2a",
+                            marginTop: "6px",
+                            lineHeight: "1.6",
+                            borderLeft: "1px solid #1a3a1a",
+                            paddingLeft: "8px",
                           }}
                         >
                           {sub.translation}
@@ -615,7 +660,6 @@ export default function App() {
                         >
                           ×
                         </span>
-
                         <div
                           style={{
                             fontSize: "14px",

@@ -27,7 +27,9 @@ app.add_middleware(
 init_db()
 audio_buffer = RollingAudioBuffer()
 current_assignment_id = None
-current_model = "base"
+current_model = "small"
+current_language = None
+current_target_language = "en"
 input_queue = multiprocessing.Queue()
 output_queue = multiprocessing.Queue()
 worker_process = None
@@ -67,12 +69,34 @@ async def get_model():
 @app.post("/model/{model_size}")
 async def set_model(model_size: str):
     global current_model
-    valid_models = ["tiny", "base", "small", "medium"]
+    valid_models = ["small"]
     if model_size not in valid_models:
         return {"error": f"Invalid model. Choose from: {valid_models}"}
     current_model = model_size
     start_worker(model_size)
     return {"model": current_model, "status": "loading"}
+
+@app.post("/language/{lang_code}")
+async def set_language(lang_code: str):
+    global current_language
+    valid = ["auto", "ja", "en", "zh", "ko", "th", "fr", "es", "de",
+             "it", "pt", "ru", "ar", "vi", "id"]
+    if lang_code not in valid:
+        return {"error": f"Invalid language"}
+    current_language = None if lang_code == "auto" else lang_code
+    print(f"🌐 Input language set to: {lang_code}")
+    return {"language": lang_code}
+
+@app.post("/target-language/{lang_code}")
+async def set_target_language(lang_code: str):
+    global current_target_language
+    valid = ["en", "ja", "zh", "ko", "th", "fr", "es", "de",
+             "it", "pt", "ru", "ar", "vi", "id"]
+    if lang_code not in valid:
+        return {"error": f"Invalid language"}
+    current_target_language = lang_code
+    print(f"🎯 Target language set to: {lang_code}")
+    return {"target_language": lang_code}
 
 @app.post("/assignment")
 async def new_assignment(data: dict):
@@ -113,18 +137,6 @@ async def get_audio_clip(offset_seconds: float):
         return {"error": "No audio at this offset"}
     return Response(content=audio_data, media_type="audio/wav")
 
-current_language = None 
-
-@app.post("/language/{lang_code}")
-async def set_language(lang_code: str):
-    global current_language
-    valid = ["auto", "ja", "en", "zh", "ko", "th"]
-    if lang_code not in valid:
-        return {"error": f"Invalid language. Choose from: {valid}"}
-    current_language = None if lang_code == "auto" else lang_code
-    print(f"🌐 Language set to: {lang_code}")
-    return {"language": lang_code}
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -147,7 +159,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if len(speech_buffer) % 50 == 0:
                 print(f"📊 RMS: {rms:.1f} | buffer: {len(speech_buffer)} chunks")
 
-            is_speech = rms > 50
+            is_speech = rms > 30
 
             if is_speech:
                 speech_buffer.append(audio_chunk)
@@ -158,7 +170,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     silence_counter = 0
 
-                if silence_counter >= 50 and len(speech_buffer) >= 2:
+                if silence_counter >= 20 and len(speech_buffer) >= 2:
                     full_audio = np.concatenate(speech_buffer)
                     speech_buffer = []
                     silence_counter = 0
@@ -170,22 +182,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     job_id = str(uuid.uuid4())[:8]
                     pending_jobs[job_id] = True
-                    input_queue.put({"id": job_id, "audio": full_audio,
-    "language": current_language})
+                    input_queue.put({
+                        "id": job_id,
+                        "audio": full_audio,
+                        "language": current_language,
+                        "to_lang": current_target_language
+                    })
                     print(f"📤 Sent job {job_id} to worker")
 
             # Check if worker has results ready
             while not output_queue.empty():
                 result = output_queue.get_nowait()
                 transcript = result.get("transcript", "").strip()
+                translation = result.get("translation", "").strip()
                 language = result.get("language", "unknown")
-                print(f"📝 Got result: '{transcript}' (lang: {language})")
+                print(f"📝 Got result: '{transcript}' → '{translation}' (lang: {language})")
 
                 if transcript and not is_hallucination(transcript):
                     await websocket.send_json({
                         "type": "transcript",
                         "text": transcript,
-                        "translation": result.get("translation", ""),
+                        "translation": translation,
                         "language": language
                     })
 
